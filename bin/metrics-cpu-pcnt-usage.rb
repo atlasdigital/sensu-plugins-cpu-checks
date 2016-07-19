@@ -41,6 +41,12 @@ class CpuGraphite < Sensu::Plugin::Metric::CLI::Graphite
          proc: proc(&:to_f),
          default: '/proc'
 
+  option :output,
+         description: 'Output format for metrics, defaults to graphite',
+         short: '-o OUTPUT',
+         long: '--output OUTPUT',
+         default: 'graphite'
+
   def acquire_proc_stats
     cpu_metrics = %w(user nice system idle iowait irq softirq steal guest)
     File.open("#{config[:proc_path]}/stat", 'r').each_line do |line|
@@ -62,6 +68,25 @@ class CpuGraphite < Sensu::Plugin::Metric::CLI::Graphite
     metrics.values.reduce { |sum, metric| sum + metric } # rubocop:disable SingleLineBlockParams
   end
 
+  def influxdb(*args)
+    prefix = "#{config[:scheme]}.cpu,cpu=cpu-total"
+    output = []
+
+    unless args.empty?
+      if args[0].is_a?(Exception) || args[1].nil? || args[2].nil?
+        puts prefix
+      else
+        args[0].each do |metric|
+          metric_val = sprintf('%.02f', (args[2][metric] / args[1].to_f) * 100)
+          output.push "usage_#{metric}=#{metric_val}"
+        end
+
+        args[3] ||= Time.now.to_i
+        puts "#{prefix} #{output.join(',')} #{args[3]}"
+      end
+    end
+  end
+
   def run
     cpu_sample1 = acquire_proc_stats
     sleep(1)
@@ -76,10 +101,16 @@ class CpuGraphite < Sensu::Plugin::Metric::CLI::Graphite
     # per CPU metric diff
     cpu_sample_diff = Hash[cpu_sample2.map { |k, v| [k, v - cpu_sample1[k]] }]
 
-    cpu_metrics.each do |metric|
-      metric_val = sprintf('%.02f', (cpu_sample_diff[metric] / cpu_total_diff.to_f) * 100)
-      output "#{config[:scheme]}.#{metric}", metric_val
+    case config[:output]
+    when 'graphite'
+      cpu_metrics.each do |metric|
+        metric_val = sprintf('%.02f', (cpu_sample_diff[metric] / cpu_total_diff.to_f) * 100)
+        output "#{config[:scheme]}.#{metric}", metric_val
+      end
+      exit 0
+    when 'influxdb'
+      send config[:output].to_sym, cpu_metrics, cpu_total_diff, cpu_sample_diff
+      exit 0
     end
-    ok
   end
 end
